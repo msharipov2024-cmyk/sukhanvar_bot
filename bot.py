@@ -292,4 +292,26 @@ def main():
 
 
 if __name__ == "__main__":
+    def main():
+    init_db()
+    logger.info("✅ База данных инициализирована")
+
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
+
+    app.add_handler(CommandHandler("start",  cmd_start))
+    app.add_handler(CommandHandler("help",   cmd_help))
+    app.add_handler(CommandHandler("daily",  cmd_daily))
+    app.add_handler(CommandHandler("level",  cmd_level))
+    app.add_handler(CommandHandler("topics", cmd_topics))
+    app.add_handler(CommandHandler("admin",  cmd_admin))
+    app.add_handler(CommandHandler("logs",   cmd_logs))
+    app.add_handler(CallbackQueryHandler(handle_callback))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+
+    logger.info("🚀 Бот запущен!")
+    app.run_polling(drop_pending_updates=True)
+
+
+if __name__ == "__main__":
     main()
+    init_db()
