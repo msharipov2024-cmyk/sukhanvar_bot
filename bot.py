@@ -1,255 +1,156 @@
 import logging
 import random
+import asyncio
 import anthropic
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import (
-    Updater, CommandHandler, MessageHandler,
-    CallbackQueryHandler, Filters, CallbackContext
-)
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 
 from config import BOT_TOKEN, ADMIN_CHAT_ID, ANTHROPIC_API_KEY
 from database import init_db, save_log, get_stats, get_recent_logs
 from prompts import SYSTEM_PROMPT, is_blocked, get_blocked_response, LEVELS, DAILY_TASKS
 
-logging.basicConfig(
-    format="%(asctime)s | %(levelname)s | %(message)s",
-    level=logging.INFO
-)
+logging.basicConfig(format="%(asctime)s | %(levelname)s | %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 claude = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
 
-def cmd_start(update: Update, context: CallbackContext):
+async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     keyboard = [
-        [InlineKeyboardButton("🎙 Задать вопрос", callback_data="ask")],
-        [InlineKeyboardButton("📚 Темы которые я знаю", callback_data="topics")],
-        [InlineKeyboardButton("🏋 Задание дня", callback_data="daily")],
-        [InlineKeyboardButton("🏆 Мой уровень", callback_data="mylevel")],
+        [InlineKeyboardButton("Задать вопрос", callback_data="ask")],
+        [InlineKeyboardButton("Темы", callback_data="topics")],
+        [InlineKeyboardButton("Задание дня", callback_data="daily")],
+        [InlineKeyboardButton("Мой уровень", callback_data="mylevel")],
     ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    update.message.reply_text(
-        f"👋 Привет, {user.first_name}!\n\n"
-        "Я — твой персональный тренер по ораторскому искусству 🎤\n\n"
-        "Помогу тебе:\n"
-        "• Составить и отточить речь\n"
-        "• Поставить голос и дыхание\n"
-        "• Победить страх сцены\n"
-        "• Освоить риторику и сторителлинг\n"
-        "• Подготовиться к выступлению\n\n"
-        "Просто напиши свой вопрос — или выбери раздел ниже 👇",
-        reply_markup=reply_markup
+    await update.message.reply_text(
+        f"Привет, {user.first_name}!\n\nЯ тренер по ораторскому искусству.\nНапиши вопрос или выбери раздел:",
+        reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
 
-def cmd_help(update: Update, context: CallbackContext):
-    update.message.reply_text(
-        "📖 Что я умею:\n\n"
-        "Просто напиши вопрос — и получи развёрнутый ответ.\n\n"
-        "Команды:\n"
-        "/start — главное меню\n"
-        "/daily — задание дня\n"
-        "/level — твой уровень оратора\n"
-        "/topics — темы которые я знаю\n\n"
-        "Темы: ораторство, голос, речи, риторика, страх сцены, сторителлинг, питч, презентации."
-    )
+async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Напиши вопрос по ораторству и получи ответ.\n\n/daily — задание дня\n/level — твой уровень\n/topics — мои темы")
 
 
-def cmd_daily(update: Update, context: CallbackContext):
-    task = random.choice(DAILY_TASKS)
-    update.message.reply_text(f"🏋 Задание дня:\n\n{task}\n\nВыполни и расскажи как прошло!")
+async def cmd_daily(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(f"Задание дня:\n\n{random.choice(DAILY_TASKS)}")
 
 
-def cmd_level(update: Update, context: CallbackContext):
+async def cmd_level(update: Update, context: ContextTypes.DEFAULT_TYPE):
     import sqlite3
     from config import DB_PATH
     user_id = str(update.effective_user.id)
     conn = sqlite3.connect(DB_PATH)
-    row = conn.execute(
-        "SELECT message_count, level FROM users WHERE user_id=?", (user_id,)
-    ).fetchone()
+    row = conn.execute("SELECT message_count, level FROM users WHERE user_id=?", (user_id,)).fetchone()
     conn.close()
     if not row:
-        update.message.reply_text("Напиши хоть один вопрос — и я начну отслеживать твой прогресс! 🌱")
+        await update.message.reply_text("Напиши первый вопрос!")
         return
     count, level = row
-    emoji = LEVELS.get(level, {}).get("emoji", "🎤")
-    levels_list = list(LEVELS.items())
-    next_level = ""
-    for i, (name, data) in enumerate(levels_list):
-        if name == level and i + 1 < len(levels_list):
-            next_name, next_data = levels_list[i + 1]
-            next_level = f"\nДо уровня {next_name} осталось {next_data['min'] - count} вопросов."
-            break
-    update.message.reply_text(
-        f"{emoji} Твой уровень: {level}\n\nЗадано вопросов: {count}{next_level}"
-    )
+    await update.message.reply_text(f"Уровень: {level}\nВопросов: {count}")
 
 
-def cmd_topics(update: Update, context: CallbackContext):
-    update.message.reply_text(
-        "📚 Темы, в которых я эксперт:\n\n"
-        "🎤 Публичные выступления\n"
-        "🔊 Постановка голоса и дыхания\n"
-        "📝 Написание речей и сценариев\n"
-        "🧠 Риторика и убеждение\n"
-        "😰 Страх сцены — как победить\n"
-        "📖 Сторителлинг и истории\n"
-        "🚀 Питч для инвесторов\n"
-        "🎓 Защита диплома / доклад\n"
-        "🥂 Тосты и поздравительные речи\n"
-        "👁 Язык тела и невербалика\n"
-        "🏆 Разбор великих ораторов и речей\n\n"
-        "Напиши любой вопрос по этим темам!"
-    )
+async def cmd_topics(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Мои темы:\n- Публичные выступления\n- Постановка голоса\n- Написание речей\n- Риторика\n- Страх сцены\n- Сторителлинг\n- Питч\n- Язык тела")
 
 
-def cmd_admin(update: Update, context: CallbackContext):
+async def cmd_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if str(update.effective_user.id) != str(ADMIN_CHAT_ID):
-        update.message.reply_text("⛔ Нет доступа.")
+        await update.message.reply_text("Нет доступа.")
         return
     stats = get_stats()
-    top5_text = ""
-    for name, username, count, level in stats["top5"]:
-        uname = f"@{username}" if username else "без username"
-        top5_text += f"  • {name} ({uname}) — {count} вопр., {level}\n"
-    update.message.reply_text(
-        f"📊 Статистика бота\n\n"
-        f"👥 Всего пользователей: {stats['users']}\n"
-        f"💬 Всего вопросов: {stats['total']}\n"
-        f"🚫 Заблокировано: {stats['blocked']}\n"
-        f"📅 Сегодня: {stats['today']}\n\n"
-        f"🏆 Топ-5 активных:\n{top5_text}"
-    )
+    await update.message.reply_text(f"Статистика:\nПользователей: {stats['users']}\nВопросов: {stats['total']}\nЗаблокировано: {stats['blocked']}\nСегодня: {stats['today']}")
 
 
-def cmd_logs(update: Update, context: CallbackContext):
+async def cmd_logs(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if str(update.effective_user.id) != str(ADMIN_CHAT_ID):
-        update.message.reply_text("⛔ Нет доступа.")
+        await update.message.reply_text("Нет доступа.")
         return
-    rows = get_recent_logs(10)
+    rows = get_recent_logs(5)
     if not rows:
-        update.message.reply_text("Пока нет логов.")
+        await update.message.reply_text("Пока нет логов.")
         return
-    for row in rows:
-        ts, name, username, question, answer, blocked = row
-        flag = "🚫" if blocked else "✅"
-        text = (
-            f"{flag} {name} (@{username or '—'})\n"
-            f"🕐 {ts}\n"
-            f"❓ {question[:200]}\n"
-            f"🤖 {answer[:300]}{'...' if len(answer) > 300 else ''}"
-        )
-        update.message.reply_text(text)
+    for ts, name, username, question, answer, blocked in rows:
+        await update.message.reply_text(f"{'БЛОК' if blocked else 'OK'} {name}\n{ts}\n{question[:100]}\n{answer[:200]}")
 
 
-def handle_callback(update: Update, context: CallbackContext):
+async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    query.answer()
+    await query.answer()
     if query.data == "ask":
-        query.message.reply_text("✍️ Напиши свой вопрос по ораторскому искусству!")
+        await query.message.reply_text("Напиши вопрос по ораторскому искусству!")
     elif query.data == "topics":
-        query.message.reply_text(
-            "📚 Темы, в которых я эксперт:\n\n"
-            "🎤 Публичные выступления\n"
-            "🔊 Постановка голоса и дыхания\n"
-            "📝 Написание речей и сценариев\n"
-            "🧠 Риторика и убеждение\n"
-            "😰 Страх сцены — как победить\n"
-            "📖 Сторителлинг и истории\n"
-            "🚀 Питч для инвесторов\n"
-            "Напиши любой вопрос!"
-        )
+        await query.message.reply_text("Темы: выступления, голос, речи, риторика, страх сцены, сторителлинг, питч, язык тела")
     elif query.data == "daily":
-        task = random.choice(DAILY_TASKS)
-        query.message.reply_text(f"🏋 Задание дня:\n\n{task}")
+        await query.message.reply_text(f"Задание дня:\n\n{random.choice(DAILY_TASKS)}")
     elif query.data == "mylevel":
         import sqlite3
         from config import DB_PATH
         user_id = str(query.from_user.id)
         conn = sqlite3.connect(DB_PATH)
-        row = conn.execute(
-            "SELECT message_count, level FROM users WHERE user_id=?", (user_id,)
-        ).fetchone()
+        row = conn.execute("SELECT message_count, level FROM users WHERE user_id=?", (user_id,)).fetchone()
         conn.close()
         if not row:
-            query.message.reply_text("Напиши хоть один вопрос — и я начну отслеживать прогресс! 🌱")
+            await query.message.reply_text("Напиши первый вопрос!")
         else:
             count, level = row
-            emoji = LEVELS.get(level, {}).get("emoji", "🎤")
-            query.message.reply_text(f"{emoji} Твой уровень: {level}\nВопросов задано: {count}")
+            await query.message.reply_text(f"Уровень: {level}, вопросов: {count}")
 
 
-def handle_message(update: Update, context: CallbackContext):
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     question = update.message.text
 
     try:
-        context.bot.send_message(
-            chat_id=ADMIN_CHAT_ID,
-            text=f"📨 Новый вопрос\n👤 {user.full_name} (@{user.username or 'нет'})\n🆔 {user.id}\n❓ {question}"
-        )
+        await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=f"Вопрос от {user.full_name} (@{user.username or 'нет'}) ID:{user.id}\n{question}")
     except Exception as e:
-        logger.warning(f"Не удалось уведомить админа: {e}")
+        logger.warning(f"Ошибка уведомления: {e}")
 
     if is_blocked(question):
         blocked_msg = get_blocked_response(question)
-        update.message.reply_text(blocked_msg)
+        await update.message.reply_text(blocked_msg)
         save_log(user.id, user.username, user.full_name, question, blocked_msg, blocked=True)
-        try:
-            context.bot.send_message(chat_id=ADMIN_CHAT_ID, text="🚫 Заблокировано — тема вне ораторства")
-        except Exception:
-            pass
         return
 
-    context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
 
     try:
-        response = claude.messages.create(
-            model="claude-opus-4-6",
-            max_tokens=1500,
-            system=SYSTEM_PROMPT,
+        loop = asyncio.get_event_loop()
+        response = await loop.run_in_executor(None, lambda: claude.messages.create(
+            model="claude-opus-4-6", max_tokens=1500, system=SYSTEM_PROMPT,
             messages=[{"role": "user", "content": question}]
-        )
+        ))
         answer = response.content[0].text
     except Exception as e:
-        logger.error(f"Ошибка Claude API: {e}")
-        answer = "⚠️ Произошла техническая ошибка. Попробуйте чуть позже."
+        logger.error(f"Ошибка Claude: {e}")
+        answer = "Техническая ошибка. Попробуй позже."
 
-    update.message.reply_text(answer)
+    await update.message.reply_text(answer)
     save_log(user.id, user.username, user.full_name, question, answer)
 
     try:
-        context.bot.send_message(
-            chat_id=ADMIN_CHAT_ID,
-            text=f"🤖 Ответ бота:\n{answer[:600]}{'...' if len(answer) > 600 else ''}"
-        )
+        await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=f"Ответ бота:\n{answer[:600]}")
     except Exception as e:
-        logger.warning(f"Не удалось отправить ответ админу: {e}")
+        logger.warning(f"Ошибка отправки ответа: {e}")
 
 
 def main():
     init_db()
-    logger.info("✅ База данных инициализирована")
-
-    updater = Updater(token=BOT_TOKEN)
-    dp = updater.dispatcher
-
-    dp.add_handler(CommandHandler("start",  cmd_start))
-    dp.add_handler(CommandHandler("help",   cmd_help))
-    dp.add_handler(CommandHandler("daily",  cmd_daily))
-    dp.add_handler(CommandHandler("level",  cmd_level))
-    dp.add_handler(CommandHandler("topics", cmd_topics))
-    dp.add_handler(CommandHandler("admin",  cmd_admin))
-    dp.add_handler(CommandHandler("logs",   cmd_logs))
-    dp.add_handler(CallbackQueryHandler(handle_callback))
-    dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_message))
-
-    logger.info("🚀 Бот запущен!")
-    updater.start_polling()
-    updater.idle()
+    logger.info("База данных инициализирована")
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
+    app.add_handler(CommandHandler("start", cmd_start))
+    app.add_handler(CommandHandler("help", cmd_help))
+    app.add_handler(CommandHandler("daily", cmd_daily))
+    app.add_handler(CommandHandler("level", cmd_level))
+    app.add_handler(CommandHandler("topics", cmd_topics))
+    app.add_handler(CommandHandler("admin", cmd_admin))
+    app.add_handler(CommandHandler("logs", cmd_logs))
+    app.add_handler(CallbackQueryHandler(handle_callback))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    logger.info("Бот запущен!")
+    app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
 if __name__ == "__main__":
